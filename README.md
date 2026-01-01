@@ -61,17 +61,25 @@ Edit registry at HKLM\SYSTEM\CurrentControlSet\Services\DHCPv6PDClient\Parameter
 Required:
 
 WANInterface (REG_SZ): WAN interface name
+
 LANInterface0 (REG_SZ): First LAN interface name
+
 Additional LANInterfaceN entries as needed (up to 12)
 
 Optional:
 
 ForceStableDUID (REG_DWORD): Use persistent DUID (default: 1)
+
 DisableRelease (REG_DWORD): Keep prefix on shutdown (default: 1)
+
 AllowSingle64 (REG_DWORD): Accept /64 prefixes (default: 0)
+
 EnableRA (REG_DWORD): Send Router Advertisements (default: 1)
+
 RAInterval (REG_DWORD): RA interval in seconds (default: 600)
+
 DNSServer0 (REG_SZ): DNS server address or ::1 for prefix::1
+
 See source code for full list
 
 Start
