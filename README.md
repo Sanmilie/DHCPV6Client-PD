@@ -57,7 +57,6 @@ Change detection to avoid unnecessary reconfiguration
 Network change monitoring with automatic response
 Registry-based configuration with hot-reload support
 
-
 Installation
 Build
 cmd cl dhcpv6_pd_service.c DHCPv6Client.c IPv6Utils.c /Fe:DHCPv6PDClient.exe ^
@@ -95,7 +94,6 @@ See source code for full list
 Start
 cmd net start DHCPv6PDClient
 
-
 Monitor via Event Viewer → Application → Source: `DHCP-Client`
 
 ROOT CA INSTALLATION (IF NEEDED)
@@ -110,8 +108,6 @@ If you see "Unknown Publisher" warning:
 5. Restart verification
 
 ---
-
-
 
 ##Example Configuration
 
