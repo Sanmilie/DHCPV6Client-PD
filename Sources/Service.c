@@ -28,6 +28,7 @@
 #include <MSWSock.h>
 #include <iphlpapi.h>
 #include <netioapi.h>
+#include <aclapi.h> 
 #include <stdio.h>
 #include <time.h>
 #include <bcrypt.h>
@@ -308,6 +309,128 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR* argv)
 // ============================================================================
 
 /**
+ * @brief Configure les ACL pour permettre à LocalService d'écrire.
+ *
+ * @param[in] registry_key_path  Chemin de la clé (ex: "SYSTEM\\...\\Parameters")
+ *
+ * @retval TRUE  Si ACL appliquées avec succès.
+ * @retval FALSE Si une erreur survient.
+ */
+static BOOL SetRegistryACLForLocalService(const WCHAR* registry_key_path)
+{
+	HKEY hKey = NULL;
+	LONG result;
+	BOOL success = FALSE;
+
+	// Ouvrir la clé avec droits WRITE_DAC (pour modifier les ACL)
+	result = RegOpenKeyExW(
+		HKEY_LOCAL_MACHINE,
+		registry_key_path,
+		0,
+		WRITE_DAC | READ_CONTROL,
+		&hKey
+	);
+
+	if (result != ERROR_SUCCESS)
+	{
+		wprintf(L"Failed to open registry key for ACL modification: %lu\n", result);
+		return FALSE;
+	}
+
+	// Récupérer le SID de LocalService
+	PSID pLocalServiceSID = NULL;
+	SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+
+	if (!AllocateAndInitializeSid(
+		&ntAuthority,
+		1,
+		SECURITY_LOCAL_SERVICE_RID,
+		0, 0, 0, 0, 0, 0, 0,
+		&pLocalServiceSID))
+	{
+		wprintf(L"AllocateAndInitializeSid failed: %lu\n", GetLastError());
+		RegCloseKey(hKey);
+		return FALSE;
+	}
+
+	// Créer une EXPLICIT_ACCESS pour LocalService
+	EXPLICIT_ACCESSW ea;
+	ZeroMemory(&ea, sizeof(EXPLICIT_ACCESSW));
+
+	ea.grfAccessPermissions = KEY_READ | KEY_WRITE | KEY_CREATE_SUB_KEY | KEY_SET_VALUE;
+	ea.grfAccessMode = GRANT_ACCESS;
+	ea.grfInheritance = CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE;
+	ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+	ea.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+	ea.Trustee.ptstrName = (LPWSTR)pLocalServiceSID;
+
+	// Récupérer l'ACL existante
+	PACL pOldDACL = NULL;
+	PSECURITY_DESCRIPTOR pSD = NULL;
+
+	result = GetSecurityInfo(
+		hKey,
+		SE_REGISTRY_KEY,
+		DACL_SECURITY_INFORMATION,
+		NULL,
+		NULL,
+		&pOldDACL,
+		NULL,
+		&pSD
+	);
+
+	if (result != ERROR_SUCCESS)
+	{
+		wprintf(L"GetSecurityInfo failed: %lu\n", result);
+		FreeSid(pLocalServiceSID);
+		RegCloseKey(hKey);
+		return FALSE;
+	}
+
+	// Créer une nouvelle ACL en fusionnant
+	PACL pNewDACL = NULL;
+	result = SetEntriesInAclW(1, &ea, pOldDACL, &pNewDACL);
+
+	if (result != ERROR_SUCCESS)
+	{
+		wprintf(L"SetEntriesInAcl failed: %lu\n", result);
+		LocalFree(pSD);
+		FreeSid(pLocalServiceSID);
+		RegCloseKey(hKey);
+		return FALSE;
+	}
+
+	// Appliquer la nouvelle ACL
+	result = SetSecurityInfo(
+		hKey,
+		SE_REGISTRY_KEY,
+		DACL_SECURITY_INFORMATION,
+		NULL,
+		NULL,
+		pNewDACL,
+		NULL
+	);
+
+	if (result == ERROR_SUCCESS)
+	{
+		wprintf(L"Registry ACL set for LocalService: %s\n", registry_key_path);
+		success = TRUE;
+	}
+	else
+	{
+		wprintf(L"SetSecurityInfo failed: %lu\n", result);
+	}
+
+	// Cleanup
+	LocalFree(pNewDACL);
+	LocalFree(pSD);
+	FreeSid(pLocalServiceSID);
+	RegCloseKey(hKey);
+
+	return success;
+}
+
+/**
 * @brief Installe le service DHCPv6-PD dans Windows.
 *
 * Actions :
@@ -454,6 +577,28 @@ BOOL InstallService()
 			wprintf(L"Validate DNSServer0 address MAX 4 DNS\n");
 			wprintf(L"Note: DUID is generated/stored in registry for persistence.\n");
 			wprintf(L"Please edit HKLM\\%s before starting the service\n", REG_KEY_DHCPV6);
+		}
+
+		// ACL pour DHCPV6 (permet au service de sauvegarder le DUID)
+		if (!SetRegistryACLForLocalService(REG_KEY_DHCPV6))
+		{
+			wprintf(L"Warning: Failed to set ACL for DHCPV6 key\n");
+			wprintf(L"Service will not be able to persist DUID\n");
+		}
+
+		// === 3. Clé State (pour persistance) ===
+		result = RegCreateKeyExW(HKEY_LOCAL_MACHINE, REG_KEY_STATE, 0, NULL, 0,
+			KEY_WRITE, NULL, &hKey, NULL);
+		if (result == ERROR_SUCCESS)
+		{
+			RegCloseKey(hKey);
+		}
+
+		// ACL pour State (critique pour SaveDHCPv6State)
+		if (!SetRegistryACLForLocalService(REG_KEY_STATE))
+		{
+			wprintf(L"Warning: Failed to set ACL for State key\n");
+			wprintf(L"Service will not be able to persist state across reboots\n");
 		}
 	}
 

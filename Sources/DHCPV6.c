@@ -2008,32 +2008,153 @@ static void CleanupOldAddresses()
 }
 
 /**
-* @brief Supprime les routes IPv6 obsolètes liées à l’interface WAN.
-*
-* Actuellement :
-*   - supprime la route par défaut (::/0) associée au WAN.
-*/
+ * @brief Supprime les routes IPv6 obsolètes sur WAN et LAN.
+ *
+ * Appelée lors de :
+ *   - Changement de préfixe délégué
+ *   - Reconnexion WAN
+ *   - Cleanup avant réapplication de config
+ *
+ * Supprime sur WAN :
+ *   - Route par défaut (::/0)
+ *   - Routes Global Unicast (2000::/3)
+ *   - Routes ULA (FC00::/7)
+ *
+ * Supprime sur LAN :
+ *   - Routes on-link Global Unicast (2000::/3)
+ *   - Routes on-link ULA (FC00::/7)
+ *
+ * Préserve partout :
+ *   - Link-local (FE80::/10) - nécessaire pour ND/RA
+ *   - Multicast (FF00::/8) - nécessaire pour DHCPv6/RA
+ */
 static void CleanupOldRoutes()
 {
 	MIB_IPFORWARD_TABLE2* t = NULL;
-	if (GetIpForwardTable2(AF_INET6, &t) == NO_ERROR)
+	WCHAR log[256] = { 0 };
+	int wan_deleted = 0;
+	int lan_deleted = 0;
+	int lan_count = 0;
+	NET_LUID lan_luids[MAX_LAN_INTERFACES];
+
+	if (GetIpForwardTable2(AF_INET6, &t) != NO_ERROR)
 	{
-		for (ULONG i = 0; i < t->NumEntries; i++)
+		LogError(L"CleanupOldRoutes: Failed to get routing table");
+		return;
+	}
+
+	for (int i = 0; i < CurInterface.Config.lan_count && i < MAX_LAN_INTERFACES; i++)
+	{
+		NET_LUID ll;
+		if (GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[i], &ll, NULL))
 		{
-			if (t->Table[i].InterfaceLuid.Value == CurInterface.State.wan_luid.Value &&
-				t->Table[i].DestinationPrefix.PrefixLength == 0)
+			lan_luids[lan_count++] = ll;
+		}
+	}
+
+	// Parcourir toutes les routes IPv6
+	for (ULONG i = 0; i < t->NumEntries; i++)
+	{
+		BYTE* prefix = t->Table[i].DestinationPrefix.Prefix.Ipv6.sin6_addr.s6_addr;
+		BYTE prefix_len = (BYTE)t->Table[i].DestinationPrefix.PrefixLength;
+		BYTE first_byte = prefix[0];
+		BOOL should_delete = FALSE;
+		BOOL is_wan = FALSE;
+		BOOL is_lan = FALSE;
+
+		// Identifier si c'est une route WAN
+		if (t->Table[i].InterfaceLuid.Value == CurInterface.State.wan_luid.Value)
+		{
+			is_wan = TRUE;
+		}
+
+		// Identifier si c'est une route LAN
+		for (int j = 0; j < lan_count; j++)
+		{
+			if (t->Table[i].InterfaceLuid.Value == lan_luids[j].Value)
 			{
-				BOOL zero = TRUE;
-				for (int j = 0; j < 16; j++)
-					if (t->Table[i].DestinationPrefix.Prefix.Ipv6.sin6_addr.s6_addr[j] != 0) zero = FALSE;
-				if (zero)
-				{
-					MIB_IPFORWARD_ROW2 r = t->Table[i];
-					DeleteIpForwardEntry2(&r);
-				}
+				is_lan = TRUE;
+				break;
 			}
 		}
-		FreeMibTable(t);
+
+		// Ignorer les routes qui ne sont ni WAN ni LAN
+		if (!is_wan && !is_lan)
+			continue;
+
+		// === Critères de suppression ===
+
+		// 1. Route par défaut (::/0) - WAN seulement
+		if (is_wan && prefix_len == 0)
+		{
+			BOOL is_zero = TRUE;
+			for (int j = 0; j < 16; j++)
+			{
+				if (prefix[j] != 0)
+				{
+					is_zero = FALSE;
+					break;
+				}
+			}
+			should_delete = is_zero;
+		}
+		// 2. Global Unicast (2000::/3) - WAN et LAN
+		else if ((first_byte & 0xE0) == 0x20)
+		{
+			should_delete = TRUE;
+		}
+		// 3. Unique Local (FC00::/7) - WAN et LAN
+		else if ((first_byte & 0xFE) == 0xFC)
+		{
+			should_delete = TRUE;
+		}
+		// 4. Préserver Link-Local (FE80::/10) et Multicast (FF00::/8)
+		// → should_delete reste FALSE
+
+		// === Suppression ===
+		if (should_delete)
+		{
+			MIB_IPFORWARD_ROW2 r = t->Table[i];
+			if (DeleteIpForwardEntry2(&r) == NO_ERROR)
+			{
+				if (is_wan)
+					wan_deleted++;
+				else if (is_lan)
+					lan_deleted++;
+
+				WCHAR ipstr[INET6_ADDRSTRLEN];
+				InetNtop(AF_INET6, prefix, ipstr, _countof(ipstr));
+				_snwprintf_s(log, _countof(log), _TRUNCATE,
+					L"Deleted %s route: %s/%u",
+					is_wan ? L"WAN" : L"LAN",
+					ipstr, prefix_len);
+				LogMessage(log);
+			}
+			else
+			{
+				WCHAR ipstr[INET6_ADDRSTRLEN];
+				InetNtop(AF_INET6, prefix, ipstr, _countof(ipstr));
+				_snwprintf_s(log, _countof(log), _TRUNCATE,
+					L"Failed to delete route: %s/%u (error %lu)",
+					ipstr, prefix_len, GetLastError());
+				LogError(log);
+			}
+		}
+	}
+
+	FreeMibTable(t);
+
+	// Log du résumé
+	if (wan_deleted > 0 || lan_deleted > 0)
+	{
+		_snwprintf_s(log, _countof(log), _TRUNCATE,
+			L"CleanupOldRoutes: Deleted %d WAN routes, %d LAN routes",
+			wan_deleted, lan_deleted);
+		LogMessage(log);
+	}
+	else
+	{
+		LogMessage(L"CleanupOldRoutes: No routes to clean");
 	}
 }
 

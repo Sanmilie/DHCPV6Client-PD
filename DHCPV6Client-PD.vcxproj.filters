@@ -19,6 +19,7 @@
     <None Include="LICENSE" />
     <None Include=".gitignore" />
     <None Include="RootCA.crt" />
+    <None Include="Changelog.md" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Sources\DHCPV6.c">
