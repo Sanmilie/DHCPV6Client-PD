@@ -1,4 +1,12 @@
-# DHCPV6Client-PD
+# DHCPV6Client-PD Client for Windows
+
+[![Windows](https://img.shields.io/badge/Windows-Server%202019%2B-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows-server)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![IPv6](https://img.shields.io/badge/IPv6-RFC%208415-blue)](https://datatracker.ietf.org/doc/html/rfc8415)
+[![GitHub release](https://img.shields.io/github/v/release/Sanmilie/DHCPV6Client-PD)](https://github.com/Sanmilie/DHCPV6Client-PD/releases)
+
+Production-ready DHCPv6 Prefix Delegation client with Router Advertisements.
+
 A Windows service that implements DHCPv6 Prefix Delegation client functionality with automatic subnet allocation and Router Advertisements.
 What is this?
 This service enables Windows to act as an IPv6 router by:
