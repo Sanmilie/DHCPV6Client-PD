@@ -54,6 +54,8 @@ Installation
 Build
 cmd cl dhcpv6_pd_service.c DHCPv6Client.c IPv6Utils.c /Fe:DHCPv6PDClient.exe ^
    /link ws2_32.lib iphlpapi.lib advapi32.lib bcrypt.lib
+Or
+Get from release.
 Install
 cmd DHCPv6PDClient.exe -install
 Configure
@@ -88,11 +90,24 @@ cmd net start DHCPv6PDClient
 
 Monitor via Event Viewer → Application → Source: `DHCP-Client`
 
+ROOT CA INSTALLATION (IF NEEDED)
+---------------------------------
+
+If you see "Unknown Publisher" warning:
+
+1. Open RootCA.crt
+2. Click "Install Certificate"
+3. Select "Local Machine"
+4. Place in "Trusted Root Certification Authorities"
+5. Restart verification
+
 ---
+
+
 
 ##Example Configuration
 
-**Basic home router with Bell Fiber (delegates `/56`):**
+**Basic home router with ISP (delegates `/56`):**
 
 WANInterface = "Internet"
 LANInterface0 = "Ethernet"
