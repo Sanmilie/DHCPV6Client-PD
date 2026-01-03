@@ -24,35 +24,35 @@
 #include <stdio.h>
 #include "../Headers/IPv6Utils.h"
 
-// ============================================================================
-// CALCUL DE SOUS-RÉSEAUX — dérivation bit-exacte d’un sous-réseau IPv6
-// ============================================================================
+ // ============================================================================
+ // CALCUL DE SOUS-RÉSEAUX — dérivation bit-exacte d’un sous-réseau IPv6
+ // ============================================================================
 
-/**
- * @brief Calcule un sous-réseau IPv6 à partir d’un préfixe délégué.
- *
- * L’algorithme fonctionne en MSB-first :
- *   1. Copie le préfixe parent @p delegated_prefix dans @p out_prefix.
- *   2. Écrit @p subnet_id dans les bits [delegated_len .. subnet_len).
- *   3. Force tous les bits après @p subnet_len à 0 (alignement strict).
- *
- * Des validations sont appliquées :
- *   - @p delegated_prefix et @p out_prefix doivent être non NULL.
- *   - @p delegated_len < @p subnet_len.
- *   - @p delegated_len et @p subnet_len doivent être ≤ 128.
- *   - Le nombre de bits de sous-réseau (subnet_len - delegated_len) doit être dans [1, 32].
- *   - @p subnet_id doit être dans la plage [0, 2^(subnet_bits) - 1].
- *   - Le préfixe parent doit être aligné (aucun bit à 1 après delegated_len).
- *
- * @param[in]  delegated_prefix  Préfixe délégué parent (16 octets, network order).
- * @param[in]  delegated_len     Longueur du préfixe délégué, en bits (0–128).
- * @param[in]  subnet_len        Longueur du sous-réseau dérivé, en bits (delegated_len–128).
- * @param[in]  subnet_id         Identifiant du sous-réseau à encoder dans les bits intermédiaires.
- * @param[out] out_prefix        Buffer de sortie pour le sous-réseau (16 octets).
- *
- * @retval TRUE  Si le sous-réseau est calculé avec succès.
- * @retval FALSE Si une validation échoue ou si l’alignement est invalide.
- */
+ /**
+  * @brief Calcule un sous-réseau IPv6 à partir d’un préfixe délégué.
+  *
+  * L’algorithme fonctionne en MSB-first :
+  *   1. Copie le préfixe parent @p delegated_prefix dans @p out_prefix.
+  *   2. Écrit @p subnet_id dans les bits [delegated_len .. subnet_len).
+  *   3. Force tous les bits après @p subnet_len à 0 (alignement strict).
+  *
+  * Des validations sont appliquées :
+  *   - @p delegated_prefix et @p out_prefix doivent être non NULL.
+  *   - @p delegated_len < @p subnet_len.
+  *   - @p delegated_len et @p subnet_len doivent être ≤ 128.
+  *   - Le nombre de bits de sous-réseau (subnet_len - delegated_len) doit être dans [1, 32].
+  *   - @p subnet_id doit être dans la plage [0, 2^(subnet_bits) - 1].
+  *   - Le préfixe parent doit être aligné (aucun bit à 1 après delegated_len).
+  *
+  * @param[in]  delegated_prefix  Préfixe délégué parent (16 octets, network order).
+  * @param[in]  delegated_len     Longueur du préfixe délégué, en bits (0–128).
+  * @param[in]  subnet_len        Longueur du sous-réseau dérivé, en bits (delegated_len–128).
+  * @param[in]  subnet_id         Identifiant du sous-réseau à encoder dans les bits intermédiaires.
+  * @param[out] out_prefix        Buffer de sortie pour le sous-réseau (16 octets).
+  *
+  * @retval TRUE  Si le sous-réseau est calculé avec succès.
+  * @retval FALSE Si une validation échoue ou si l’alignement est invalide.
+  */
 BOOL IPv6_CalculateSubnet(
 	const BYTE* delegated_prefix,
 	BYTE delegated_len,

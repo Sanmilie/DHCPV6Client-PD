@@ -72,6 +72,51 @@ struct nd_opt_rdnss
     struct in6_addr dns[1];     /**< Tableau extensible d’adresses DNS. */
 };
 
+/**
+ * @struct nd_opt_dnssl
+ * @brief Option DNSSL (DNS Search List, Type 31, RFC 6106) pour Router Advertisement.
+ *
+ * Permet d'indiquer un ou plusieurs suffixes de recherche DNS aux clients IPv6 via RA.
+ *
+ * @note Le champ `domain` est un tableau extensible encodé en format DNS wire format (labels length-prefixed).
+ */
+struct nd_opt_dnssl 
+{
+    uint8_t type;   // 31
+    uint8_t len;    // in units of 8 bytes
+    uint16_t reserved;
+    uint32_t lifetime;
+    BYTE domain[1]; // extensible
+};
+
+/**
+ * @struct nd_opt_mtu
+ * @brief Option MTU (Type 5) pour Router Advertisement.
+ *
+ * Indique la MTU recommandée sur le lien pour les clients IPv6.
+ */
+struct nd_opt_mtu 
+{
+    uint8_t type;      // 5
+    uint8_t len;       // 1 (8 octets)
+    uint16_t reserved; // 0
+    uint32_t mtu;      // host->network order
+};
+
+/**
+ * @struct nd_opt_slla
+ * @brief Option Source Link-Layer Address (Type 1) pour Router Advertisement.
+ *
+ * Permet de fournir l'adresse MAC du routeur aux clients IPv6.
+ */
+struct nd_opt_slla 
+{
+    uint8_t type;   // 1
+    uint8_t len;    // 1 (8 octets)
+    uint8_t mac[6]; // MAC du serveur
+};
+
+
 #pragma pack(pop)
 
 /**
@@ -87,7 +132,7 @@ struct nd_opt_rdnss
  */
 typedef struct DHCPv6Config
 {
-    WCHAR wan_interface[256];                         /**< Nom de l’interface WAN. */
+    WCHAR wan_interface[256];                         /**< Nom de l’interface WAN.  */
     WCHAR lan_interfaces[MAX_LAN_INTERFACES][256];    /**< Noms des interfaces LAN. */
     int   lan_count;                                  /**< Nombre d’interfaces LAN. */
 

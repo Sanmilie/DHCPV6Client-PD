@@ -126,11 +126,20 @@
 /** @brief Type ICMPv6 Router Advertisement. */
 #define ICMPV6_RA_TYPE 134
 
+/** @brief Option Source Link-Layer Address. */
+#define ND_OPT_SLLA_INFO 1
+
 /** @brief Option Prefix Information. */
 #define ND_OPT_PREFIX_INFO 3
 
+/** @brief Option Link MTU. */
+#define ND_OPT_MTU 5
+
 /** @brief Option RDNSS (DNS via RA). */
 #define ND_OPT_RDNSS 25
+
+/** @brief Option DNSSL (Sufix List via RA). */
+#define ND_OPT_DNSSL 31
 
 // ============================================================================
 // DHCPv4 CONSTANTS (RFC 2131 / 2132)
@@ -233,7 +242,7 @@ extern void LogError(const WCHAR* msg);
 /**
  * @brief Récupère LUID et IfIndex d’une interface réseau.
  */
-extern BOOL GetCurInterfaceInfo(const WCHAR* name, NET_LUID* luid, NET_IFINDEX* ifindex);
+extern BOOL GetCurInterfaceInfo(const WCHAR* name, NET_LUID* luid, NET_IFINDEX* ifindex, BYTE* Mac, DWORD* MTU);
 
 #endif // SRV_MAIN
 #endif // _H_DHCP

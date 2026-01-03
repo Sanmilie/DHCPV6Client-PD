@@ -93,20 +93,35 @@ void LogError(const WCHAR* msg)
 // ============================================================================
 
 /**
-* @brief Récupère le LUID et l’IfIndex d’une interface réseau IPv6.
-*
-* Recherche par :
-*   - Description
-*   - FriendlyName
-*
-* @param[in]  name     Nom de l’interface à rechercher.
-* @param[out] luid     LUID de l’interface (optionnel).
-* @param[out] ifindex  Index de l’interface (optionnel).
-*
-* @retval TRUE  Si l’interface est trouvée.
-* @retval FALSE Si l’interface n’existe pas ou en cas d’erreur.
-*/
-BOOL GetCurInterfaceInfo(const WCHAR* name, NET_LUID* luid, NET_IFINDEX* ifindex)
+ * @brief Récupère le LUID, l'IfIndex, la MAC et la MTU d'une interface réseau IPv6.
+ *
+ * Cette fonction parcourt les interfaces IPv6 du système et cherche une correspondance
+ * avec le nom fourni. La recherche se fait sur :
+ *   - Description (p->Description)
+ *   - FriendlyName (p->FriendlyName)
+ *
+ * Si l'interface est trouvée, les informations suivantes peuvent être récupérées :
+ *   - LUID (Locally Unique Identifier)
+ *   - IfIndex (index d'interface)
+ *   - MAC du périphérique (6 octets minimum)
+ *   - MTU du lien
+ *
+ * @param[in]  name     Nom de l'interface à rechercher (Description ou FriendlyName).
+ * @param[out] luid     Pointeur pour récupérer le LUID de l'interface (optionnel).
+ * @param[out] ifindex  Pointeur pour récupérer l'IfIndex de l'interface (optionnel).
+ * @param[out] Mac      Pointeur pour récupérer l'adresse MAC (6 octets, optionnel).
+ * @param[out] MTU      Pointeur pour récupérer la MTU de l'interface (optionnel).
+ *
+ * @retval TRUE  L'interface correspondant au nom a été trouvée et les informations
+ *               disponibles ont été remplies.
+ * @retval FALSE L'interface n'existe pas ou une erreur système est survenue.
+ *
+ * @note Cette fonction utilise GetAdaptersAddresses(AF_INET6) et alloue un buffer
+ *       dynamique pour parcourir la liste des interfaces. Le buffer est toujours
+ *       libéré avant le retour.
+ * @note Les champs optionnels peuvent être passés à NULL si l'information n'est pas nécessaire.
+ */
+BOOL GetCurInterfaceInfo(const WCHAR* name, NET_LUID* luid, NET_IFINDEX* ifindex, BYTE* Mac, DWORD* MTU)
 {
 	PIP_ADAPTER_ADDRESSES pAddr = NULL;
 	ULONG len = 0;
@@ -156,6 +171,8 @@ BOOL GetCurInterfaceInfo(const WCHAR* name, NET_LUID* luid, NET_IFINDEX* ifindex
 		{
 			if (luid) *luid = p->Luid;
 			if (ifindex) *ifindex = p->IfIndex;
+			if (Mac && p->PhysicalAddressLength >= 6) memcpy(Mac, p->PhysicalAddress, 6);
+			if (MTU) *MTU = p->Mtu;
 			found = TRUE;
 
 			swprintf_s(log, sizeof(log) >> 1, L"Interface found: %s (LUID: %lld, Index: %u)",

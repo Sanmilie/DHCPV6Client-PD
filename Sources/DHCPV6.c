@@ -254,7 +254,7 @@ static VOID WINAPI NetworkChangeCallback(
 	for (int i = 0; i < CurInterface.Config.lan_count && i < MAX_LAN_INTERFACES; i++)
 	{
 		NET_LUID ll;
-		if (GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[i], &ll, NULL))
+		if (GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[i], &ll, NULL, NULL, NULL))
 		{
 			if (Row->InterfaceLuid.Value == ll.Value)
 			{
@@ -429,7 +429,7 @@ static BOOL CheckWANStatus()
 			LogMessage(L"WAN reconnected");
 			NET_LUID nl;
 			NET_IFINDEX ni;
-			if (GetCurInterfaceInfo(CurInterface.Config.wan_interface, &nl, &ni))
+			if (GetCurInterfaceInfo(CurInterface.Config.wan_interface, &nl, &ni, NULL, NULL))
 			{
 				CurInterface.State.wan_luid = nl;
 				CurInterface.State.wan_ifindex = ni;
@@ -1329,34 +1329,51 @@ static uint16_t CalculateICMPv6Checksum(
 }
 
 /**
-* @brief Envoie un Router Advertisement complet sur une interface LAN.
-*
-* Construit un RA incluant :
-*   - en-tête ICMPv6 Router Advertisement
-*   - une ou plusieurs options Prefix Information (par préfixe délégué)
-*   - une option RDNSS (RFC 8106) si des DNS sont configurés
-*
-* Le paquet est émis vers ff02::1 (all-nodes multicast) sur l’interface LAN
-* spécifiée par son index logique.
-*
-* @param[in] lan_index  Index logique de l’interface LAN dans la configuration.
-*
-* @retval TRUE  Si le RA a été envoyé avec succès.
-* @retval FALSE Si l’interface est introuvable ou en cas d’erreur socket.
-*/
+ * @brief Envoie un Router Advertisement complet sur une interface LAN.
+ *
+ * Cette fonction construit et émet un message ICMPv6 Router Advertisement incluant :
+ *   - L'en-tête ICMPv6 RA (RFC 4861)
+ *   - L'option Source Link-Layer Address (SLLA, Type 1) avec la MAC du serveur
+ *   - L'option MTU (Type 5) indiquant la MTU du lien
+ *   - Une ou plusieurs options Prefix Information (Type 3) pour les préfixes délégués
+ *   - Option RDNSS (Type 25, RFC 8106) si des serveurs DNS sont configurés
+ *
+ * Le paquet est émis vers l'adresse multicast ff02::1 (all-nodes) sur l'interface LAN
+ * spécifiée par son index logique.
+ *
+ * @note La résolution DNS dynamique : si un des DNS est "::1", il sera résolu en "prefix::1"
+ *       basé sur le préfixe du LAN correspondant.
+ *
+ * @note La fonction configure également :
+ *       - Hop Limit multicast = 255
+ *       - MTU du lien depuis la configuration ou via récupération dynamique de l'interface
+ *
+ * @param[in] lan_index Index logique de l'interface LAN dans la configuration.
+ *
+ * @retval TRUE  Le RA a été envoyé avec succès.
+ * @retval FALSE L'interface est introuvable, ne possède pas de link-local,
+ *               ou une erreur de socket est survenue.
+ */
 static BOOL SendRA(int lan_index)
 {
 	WCHAR log[256];
+	BYTE packet[1024] = { 0 };
+	BYTE src_addr[16] = { 0 };
+	BYTE src_mac[6] = { 0 };
+	size_t offset = 0;
+	DWORD hop = 255;
+	DWORD MTU = 1500;
+	BOOL has_src = FALSE;
+	NET_LUID lan_luid;
+	NET_IFINDEX lan_ifindex;
+	SOCKET s = INVALID_SOCKET;
 
 	if (lan_index < 0 || lan_index >= CurInterface.Config.lan_count)
 	{
 		return FALSE;
 	}
 
-	NET_LUID lan_luid;
-	NET_IFINDEX lan_ifindex;
-
-	if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[lan_index], &lan_luid, &lan_ifindex))
+	if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[lan_index], &lan_luid, &lan_ifindex, src_mac, &MTU))
 	{
 		_snwprintf_s(log, _countof(log), _TRUNCATE,
 			L"SendRA: LAN interface %d (%s) not found",
@@ -1366,9 +1383,6 @@ static BOOL SendRA(int lan_index)
 	}
 
 	// Obtenir l'adresse link-local de l'interface LAN
-	BYTE src_addr[16] = { 0 };
-	BOOL has_src = FALSE;
-
 	MIB_UNICASTIPADDRESS_TABLE* addr_table = NULL;
 	if (GetUnicastIpAddressTable(AF_INET6, &addr_table) == NO_ERROR)
 	{
@@ -1397,7 +1411,7 @@ static BOOL SendRA(int lan_index)
 	}
 
 	// Créer le socket ICMPv6
-	SOCKET s = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+	s = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
 	if (s == INVALID_SOCKET)
 	{
 		LogError(L"SendRA: Failed to create ICMPv6 socket");
@@ -1406,24 +1420,40 @@ static BOOL SendRA(int lan_index)
 
 	// Bind à l'interface spécifique
 	setsockopt(s, IPPROTO_IPV6, IPV6_MULTICAST_IF, (char*)&lan_ifindex, sizeof(lan_ifindex));
-
+	setsockopt(s, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, (char*)&hop, sizeof(hop));
 	// Construire le paquet RA
-	BYTE packet[512] = { 0 };
-	size_t offset = 0;
-
 	// 1. ICMPv6 Router Advertisement header
 	struct icmp6_ra* ra = (struct icmp6_ra*)packet;
 	ra->type = ICMPV6_RA_TYPE;  // ND_ROUTER_ADVERT
 	ra->code = 0;
 	ra->cksum = 0;  // Calculé plus tard
-	ra->hop_limit = 64;
+	ra->hop_limit = 0;
 	ra->flags = 0;  // M=0 (pas de DHCPv6 managed), O=0 (pas de DHCPv6 other)
 	ra->router_lifetime = htons((uint16_t)CurInterface.Config.ra_lifetime_sec);
 	ra->reachable_time = 0;
 	ra->retrans_timer = 0;
 	offset += sizeof(struct icmp6_ra);
 
-	// 2. Pour chaque préfixe délégué, ajouter une option Prefix Information
+	// 2. Self Link
+	struct nd_opt_slla* slla = (struct nd_opt_slla*)(packet + offset);
+	slla->type = 1;
+	slla->len = 1; // 8 octets
+	memcpy(slla->mac, src_mac, 6);
+	offset += 8;
+
+	// 3. Send MTU
+	struct nd_opt_mtu* mtu_opt = (struct nd_opt_mtu*)(packet + offset);
+	mtu_opt->type = ND_OPT_MTU;
+	mtu_opt->len = 1; // 8 octets
+	mtu_opt->reserved = 0;
+	mtu_opt->mtu = htonl(MTU);
+	offset += 8;
+
+	// Variable pour stocker le préfixe de ce LAN (nécessaire pour DNS)
+	BYTE lan_prefix[16] = { 0 };
+	BOOL has_lan_prefix = FALSE;
+
+	// 3. Pour chaque préfixe délégué, ajouter une option Prefix Information
 	for (int pi = 0; pi < CurInterface.State.prefix_count && pi < MAX_PREFIXES; pi++)
 	{
 		IAPrefix* pd = &CurInterface.State.prefixes[pi];
@@ -1445,6 +1475,10 @@ static BOOL SendRA(int lan_index)
 			opt->reserved2 = 0;
 			memcpy(opt->prefix, pd->prefix, 16);
 			offset += sizeof(struct nd_opt_prefix_info);
+
+			// Sauvegarder le préfixe pour résolution DNS
+			memcpy(lan_prefix, pd->prefix, 16);
+			has_lan_prefix = TRUE;
 
 			WCHAR ipstr[INET6_ADDRSTRLEN];
 			InetNtop(AF_INET6, pd->prefix, ipstr, _countof(ipstr));
@@ -1477,6 +1511,10 @@ static BOOL SendRA(int lan_index)
 		memcpy(opt->prefix, subnet_prefix, 16);
 		offset += sizeof(struct nd_opt_prefix_info);
 
+		// Sauvegarder le préfixe pour résolution DNS
+		memcpy(lan_prefix, subnet_prefix, 16);
+		has_lan_prefix = TRUE;
+
 		WCHAR ipstr[INET6_ADDRSTRLEN];
 		InetNtop(AF_INET6, subnet_prefix, ipstr, _countof(ipstr));
 		_snwprintf_s(log, _countof(log), _TRUNCATE,
@@ -1484,8 +1522,8 @@ static BOOL SendRA(int lan_index)
 		LogMessage(log);
 	}
 
-	// 3. Option RDNSS (DNS servers)
-	if (CurInterface.Config.dns_count > 0)
+	// 4. Option RDNSS (DNS servers)
+	if (CurInterface.Config.dns_count > 0 && has_lan_prefix)
 	{
 		struct nd_opt_rdnss* opt = (struct nd_opt_rdnss*)(packet + offset);
 		opt->type = ND_OPT_RDNSS;
@@ -1495,7 +1533,44 @@ static BOOL SendRA(int lan_index)
 
 		for (int i = 0; i < CurInterface.Config.dns_count && i < MAX_DNS_SERVERS; i++)
 		{
-			memcpy(&opt->dns[i], CurInterface.Config.dns_servers[i], 16);
+			// Vérifier si c'est le marqueur "::1" (à résoudre)
+			BOOL is_self_marker = TRUE;
+			for (int b = 0; b < 15; b++)
+			{
+				if (CurInterface.Config.dns_servers[i][b] != 0)
+				{
+					is_self_marker = FALSE;
+					break;
+				}
+			}
+			is_self_marker = is_self_marker && (CurInterface.Config.dns_servers[i][15] == 1);
+
+			if (is_self_marker)
+			{
+				// Résoudre en prefix::1 pour ce LAN
+				BYTE resolved_dns[16];
+				memcpy(resolved_dns, lan_prefix, 16);
+				resolved_dns[15] = 1;  // prefix::1
+
+				memcpy(&opt->dns[i], resolved_dns, 16);
+
+				WCHAR ipstr[INET6_ADDRSTRLEN];
+				InetNtop(AF_INET6, resolved_dns, ipstr, _countof(ipstr));
+				_snwprintf_s(log, _countof(log), _TRUNCATE,
+					L"RA: RDNSS resolved ::1 → %s", ipstr);
+				LogMessage(log);
+			}
+			else
+			{
+				// Adresse DNS explicite, utiliser telle quelle
+				memcpy(&opt->dns[i], CurInterface.Config.dns_servers[i], 16);
+
+				WCHAR ipstr[INET6_ADDRSTRLEN];
+				InetNtop(AF_INET6, CurInterface.Config.dns_servers[i], ipstr, _countof(ipstr));
+				_snwprintf_s(log, _countof(log), _TRUNCATE,
+					L"RA: RDNSS explicit %s", ipstr);
+				LogMessage(log);
+			}
 		}
 
 		offset += 8 + (CurInterface.Config.dns_count * 16);
@@ -1504,15 +1579,19 @@ static BOOL SendRA(int lan_index)
 			L"RA: RDNSS with %d DNS servers", CurInterface.Config.dns_count);
 		LogMessage(log);
 	}
+	else if (CurInterface.Config.dns_count > 0 && !has_lan_prefix)
+	{
+		LogError(L"RA: Cannot send RDNSS without valid LAN prefix");
+	}
 
-	// 4. Calculer le checksum
+	// 5. Calculer le checksum
 	BYTE dst_addr[16];
 	inet_pton(AF_INET6, "ff02::1", dst_addr);  // All nodes multicast
 
 	uint16_t cksum = CalculateICMPv6Checksum(src_addr, dst_addr, packet, offset);
 	ra->cksum = htons(cksum);
 
-	// 5. Envoyer le paquet
+	// 6. Envoyer le paquet
 	struct sockaddr_in6 dest = { 0 };
 	dest.sin6_family = AF_INET6;
 	inet_pton(AF_INET6, "ff02::1", &dest.sin6_addr);
@@ -1994,7 +2073,7 @@ static void CleanupOldAddresses()
 			for (int j = 0; j < CurInterface.Config.lan_count && j < MAX_LAN_INTERFACES; j++)
 			{
 				NET_LUID ll;
-				if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[j], &ll, NULL)) continue;
+				if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[j], &ll, NULL, NULL, NULL)) continue;
 				if (t->Table[i].InterfaceLuid.Value == ll.Value)
 				{
 					MIB_UNICASTIPADDRESS_ROW r = t->Table[i];
@@ -2046,7 +2125,7 @@ static void CleanupOldRoutes()
 	for (int i = 0; i < CurInterface.Config.lan_count && i < MAX_LAN_INTERFACES; i++)
 	{
 		NET_LUID ll;
-		if (GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[i], &ll, NULL))
+		if (GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[i], &ll, NULL, NULL, NULL))
 		{
 			lan_luids[lan_count++] = ll;
 		}
@@ -2281,7 +2360,7 @@ static BOOL ApplyLANPrefixes()
 		if (pd->prefix_len == 64 && CurInterface.Config.allow_single_64)
 		{
 			NET_LUID ll;
-			if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[0], &ll, NULL)) continue;
+			if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[0], &ll, NULL, NULL, NULL)) continue;
 
 			BYTE la[16];
 			memcpy(la, pd->prefix, 16);
@@ -2336,7 +2415,7 @@ static BOOL ApplyLANPrefixes()
 			if (sub >= CurInterface.Config.lan_count) break;
 
 			NET_LUID ll;
-			if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[sub], &ll, NULL))
+			if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[sub], &ll, NULL, NULL, NULL))
 			{
 				_snwprintf_s(log, _countof(log), _TRUNCATE,
 					L"LAN interface %d (%s) not found, skipping",
@@ -2506,7 +2585,7 @@ static void CleanupConfiguration()
 		if (pd->prefix_len == 64 && CurInterface.Config.allow_single_64)
 		{
 			NET_LUID ll;
-			if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[0], &ll, NULL)) continue;
+			if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[0], &ll, NULL, NULL, NULL)) continue;
 
 			BYTE la[16];
 			memcpy(la, pd->prefix, 16);
@@ -2533,7 +2612,7 @@ static void CleanupConfiguration()
 			if (sub >= CurInterface.Config.lan_count) break;
 
 			NET_LUID ll;
-			if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[sub], &ll, NULL)) continue;
+			if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[sub], &ll, NULL, NULL, NULL)) continue;
 
 			// Calculer le préfixe /64 pour ce sous-réseau
 			BYTE subnet_prefix[16];
@@ -2608,7 +2687,7 @@ static void CleanupConfiguration()
 						for (int li = 0; li < CurInterface.Config.lan_count; li++)
 						{
 							NET_LUID ll;
-							if (GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[li], &ll, NULL))
+							if (GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[li], &ll, NULL, NULL, NULL))
 							{
 								if (t->Table[i].InterfaceLuid.Value == ll.Value)
 								{
@@ -2710,8 +2789,7 @@ static BOOL SendDHCPv6(SOCKET s, struct sockaddr_in6* dest, BYTE type)
 */
 static BOOL RecvDHCPv6(SOCKET s, BYTE expect, int toms)
 {
-	struct timeval tv = { toms / 1000, (toms % 1000) * 1000 };
-	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char*)&tv, sizeof(tv));
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (char*)&toms, sizeof(toms));
 
 	BYTE buf[2048];
 	struct sockaddr_in6 from;
@@ -2987,7 +3065,7 @@ static BOOL KernelHasLanAddresses()
 			for (int li = 0; li < CurInterface.Config.lan_count; li++)
 			{
 				NET_LUID ll;
-				if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[li], &ll, NULL)) continue;
+				if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[li], &ll, NULL, NULL, NULL)) continue;
 
 				if (t->Table[i].InterfaceLuid.Value == ll.Value)
 				{
@@ -3196,7 +3274,7 @@ static BOOL LANPrefixesChanged()
 			}
 
 			NET_LUID ll;
-			if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[0], &ll, NULL))
+			if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[0], &ll, NULL, NULL, NULL))
 			{
 				all_matched = FALSE;
 				break;
@@ -3247,7 +3325,7 @@ static BOOL LANPrefixesChanged()
 			if (sub >= CurInterface.Config.lan_count) break;
 
 			NET_LUID ll;
-			if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[sub], &ll, NULL))
+			if (!GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[sub], &ll, NULL, NULL, NULL))
 			{
 				all_matched = FALSE;
 				break;
@@ -3312,7 +3390,7 @@ static BOOL LANPrefixesChanged()
 			for (int li = 0; li < CurInterface.Config.lan_count; li++)
 			{
 				NET_LUID ll;
-				if (GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[li], &ll, NULL))
+				if (GetCurInterfaceInfo(CurInterface.Config.lan_interfaces[li], &ll, NULL, NULL, NULL))
 				{
 					if (t->Table[i].InterfaceLuid.Value == ll.Value)
 					{
@@ -3407,7 +3485,7 @@ static BOOL AcquireDHCPv6(BYTE type)
 	setsockopt(s, IPPROTO_IPV6, IPV6_MULTICAST_IF, (char*)&CurInterface.State.wan_ifindex, sizeof(CurInterface.State.wan_ifindex));
 
 	struct sockaddr_in6 dest;
-	if ((type == DHCPV6_RENEW || type == DHCPV6_REBIND || type == DHCPV6_REQUEST) && CurInterface.State.use_unicast)
+	if ((type == DHCPV6_RENEW || type == DHCPV6_REBIND || type == DHCPV6_REQUEST || type == DHCPV6_REAPPLY) && CurInterface.State.use_unicast)
 	{
 		dest = CurInterface.State.server_addr;
 		LogMessage(L"Using unicast to server");
@@ -3612,20 +3690,23 @@ static int DHCPV6StateMachine(pDHCPV6 ClientV6)
 	// Charger état ou acquérir nouveau bail
 	if (ClientV6->LoadDHCPState())
 	{
-		if (!GetCurInterfaceInfo(ClientV6->Config.wan_interface, &ClientV6->State.wan_luid, &ClientV6->State.wan_ifindex))
+		if (!GetCurInterfaceInfo(ClientV6->Config.wan_interface, &ClientV6->State.wan_luid, &ClientV6->State.wan_ifindex, NULL, NULL))
 		{
 			LogError(L"FATAL: WAN interface not found");
 			return 0;
 		}
 		LogMessage(L"Restore DHCPv6 State");
 		if (ClientV6->State.lease_start != 0)
+		{
+			ClientV6->State.in_renewal = 0;
 			ClientV6->AcquireDHCP(DHCPV6_REAPPLY);
+		}
 		else
 			ClientV6->AcquireDHCP(DHCPV6_SOLICIT);
 	}
 	else
 	{
-		if (!GetCurInterfaceInfo(ClientV6->Config.wan_interface, &ClientV6->State.wan_luid, &ClientV6->State.wan_ifindex))
+		if (!GetCurInterfaceInfo(ClientV6->Config.wan_interface, &ClientV6->State.wan_luid, &ClientV6->State.wan_ifindex, NULL, NULL))
 		{
 			LogError(L"FATAL: WAN interface not found");
 			return 0;
@@ -3674,13 +3755,13 @@ static int DHCPV6StateMachine(pDHCPV6 ClientV6)
 					ClientV6->SendAllRAs();
 				}
 			}
-			else if (el >= t1 && !ClientV6->State.in_renewal)
+			else if (el >= t1 && !ClientV6->State.in_renewal || ClientV6->State.renew_retries)
 			{
 				LogMessage(L"T1 reached - sending RENEW");
 				ClientV6->State.in_renewal = TRUE;
-				ClientV6->State.renew_retries = 0;
 				if (ClientV6->AcquireDHCP(DHCPV6_RENEW))
 				{
+					ClientV6->State.renew_retries = 0;
 					ClientV6->State.in_renewal = FALSE;
 				}
 				else
@@ -3688,6 +3769,7 @@ static int DHCPV6StateMachine(pDHCPV6 ClientV6)
 					ClientV6->State.renew_retries++;
 					if (ClientV6->State.renew_retries >= 3)
 					{
+						ClientV6->State.renew_retries = 0;
 						ClientV6->State.in_renewal = FALSE;
 					}
 				}
@@ -3725,19 +3807,16 @@ static int DHCPV6StateMachine(pDHCPV6 ClientV6)
 		}
 		else if (LanStatus == 2)
 		{
-			LogMessage(L"WAN prefix change detected — full reset + SOLICIT");
+			LogMessage(L"WAN change detected — Try to reapply current lease");
 
-			// Reset complet de la config locale
-			ClientV6->CleanupConfiguration();
-
-			ClientV6->State.prefix_count = 0;
-			ClientV6->State.has_wan_address = FALSE;
-			ClientV6->State.has_gateway = FALSE;
-			ClientV6->State.use_unicast = FALSE;
-			ClientV6->State.lease_start = 0;
-
-			// Nouveau SOLICIT pour récupérer NA + PD cohérents
-			ClientV6->AcquireDHCP(DHCPV6_SOLICIT);
+			//TODO : If lease invalide can cause problem
+			ClientV6->AcquireDHCP(DHCPV6_REAPPLY);
+			//Notifier le serveur cascade si présent
+			if (ClientV6->_prefix_change_callback)
+			{
+				ClientV6->NotifyServerOfPrefixChange();
+				LogMessage(L"Server cascade notified of prefix change");
+			}
 
 			// Si on a récupéré un PD, on balance les RA
 			if (ClientV6->State.prefix_count > 0 && ClientV6->Config.enable_ra)
@@ -3780,7 +3859,7 @@ static int DHCPV6StateMachine(pDHCPV6 ClientV6)
 			NET_LUID nl;
 			NET_IFINDEX ni;
 
-			if (GetCurInterfaceInfo(ClientV6->Config.wan_interface, &nl, &ni))
+			if (GetCurInterfaceInfo(ClientV6->Config.wan_interface, &nl, &ni, NULL, NULL))
 			{
 				ClientV6->State.wan_luid = nl;
 				ClientV6->State.wan_ifindex = ni;
@@ -3797,7 +3876,7 @@ static int DHCPV6StateMachine(pDHCPV6 ClientV6)
 				NET_LUID ll;
 				NET_IFINDEX li;
 
-				if (GetCurInterfaceInfo(ClientV6->Config.lan_interfaces[i], &ll, &li))
+				if (GetCurInterfaceInfo(ClientV6->Config.lan_interfaces[i], &ll, &li, NULL, NULL))
 				{
 					WCHAR buf[256];
 					swprintf(buf, 256, L"LAN interface %d updated: %s",
