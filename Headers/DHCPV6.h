@@ -255,6 +255,8 @@ typedef struct DHCPv6State
     ///@{
     time_t last_ra_time;       /**< Timestamp du dernier RA envoyé. */
     ///@}
+
+    BOOL   PrefixChanged;
 } DHCPv6State;
 
 typedef struct DHCPV6 DHCPV6, * pDHCPV6;

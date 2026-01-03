@@ -1831,16 +1831,11 @@ static BOOL ParseResponse(BYTE* buf, int len, BYTE expected_type)
 				}
 				else if (iopt == OPTION_IAPREFIX && ilen >= 25)
 				{
+
 					IAPrefix* p = &CurInterface.State.prefixes[CurInterface.State.prefix_count];
-					memcpy(&p->preferred_lifetime, &buf[io], 4);
-					memcpy(&p->valid_lifetime, &buf[io + 4], 4);
-					p->preferred_lifetime = ntohl(p->preferred_lifetime);
-					p->valid_lifetime = ntohl(p->valid_lifetime);
-					p->prefix_len = buf[io + 8];
-					memcpy(p->prefix, &buf[io + 9], 16);
 
 					// Validation stricte du préfixe
-					BYTE first_byte = p->prefix[0];
+					BYTE first_byte = buf[io + 9];
 
 					// Rejeter les préfixes non valides
 					if (first_byte == 0xFF)
@@ -1871,26 +1866,44 @@ static BOOL ParseResponse(BYTE* buf, int len, BYTE expected_type)
 							continue;
 						}
 					}
-					else if (p->prefix_len < (BYTE)CurInterface.Config.min_prefix_len)
+					else if (buf[io + 8] < (BYTE)CurInterface.Config.min_prefix_len)
 					{
 						_snwprintf_s(log, _countof(log), _TRUNCATE,
 							L"Prefix /%u refused (too small, min /%u)",
-							p->prefix_len, CurInterface.Config.min_prefix_len);
+							buf[io + 8], CurInterface.Config.min_prefix_len);
 						LogError(log);
 					}
-					else if (p->prefix_len > (BYTE)CurInterface.Config.max_prefix_len)
+					else if (buf[io + 8] > (BYTE)CurInterface.Config.max_prefix_len)
 					{
 						_snwprintf_s(log, _countof(log), _TRUNCATE,
 							L"Prefix /%u refused (too large, max /%u)",
-							p->prefix_len, CurInterface.Config.max_prefix_len);
+							buf[io + 8], CurInterface.Config.max_prefix_len);
 						LogError(log);
 					}
-					else if (p->prefix_len == 64 && !CurInterface.Config.allow_single_64)
+					else if (buf[io + 8] == 64 && !CurInterface.Config.allow_single_64)
 					{
 						LogMessage(L"Single /64 refused (set AllowSingle64=1)");
 					}
 					else
 					{
+
+						// Vérifier si le préfixe a changé si oui forcer l'envoi de RA avec un lifetime court
+						if (!IPv6_PrefixEquals(&buf[io + 9], buf[io + 8], p->prefix, p->prefix_len))
+						{
+							// Prefix à changer
+							CurInterface.State.PrefixChanged = TRUE;
+							p->preferred_lifetime = 30;
+							p->valid_lifetime = 30;
+							SendAllRAs();
+						}
+
+						memcpy(&p->preferred_lifetime, &buf[io], 4);
+						memcpy(&p->valid_lifetime, &buf[io + 4], 4);
+						p->preferred_lifetime = ntohl(p->preferred_lifetime);
+						p->valid_lifetime = ntohl(p->valid_lifetime);
+						p->prefix_len = buf[io + 8];
+						memcpy(p->prefix, &buf[io + 9], 16);
+
 						// Tracker le min valid_lifetime
 						if (p->valid_lifetime < min_valid_pd)
 						{
@@ -3568,6 +3581,17 @@ static BOOL AcquireDHCPv6(BYTE type)
 			CurInterface.State.lease_start = 0;
 			CurInterface.State.use_unicast = FALSE;
 			CurInterface.State.selected_server_duid_len = 0;
+		}
+
+		if (CurInterface.State.PrefixChanged)
+		{
+			CurInterface.State.PrefixChanged = FALSE;
+			LogMessage(L"PD Prefix changed - cleaning up and rebuild clean network");
+			CleanupOldAddresses();
+			CleanupOldRoutes();
+			ApplyWANAddress();
+			ApplyLANPrefixes();
+			AddDefaultRoute();
 		}
 	}
 
